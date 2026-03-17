@@ -36,6 +36,7 @@
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "u8g2.h"
+#include "mapmo_logo.c"
 
 #if CONFIG_EXAMPLE_EXTENDED_ADV
 static uint8_t ext_adv_pattern_1[] = {
@@ -308,6 +309,7 @@ bleprph_gap_event(struct ble_gap_event *event, void *arg)
         MODLOG_DFLT(INFO, "disconnect; reason=%d ", event->disconnect.reason);
         bleprph_print_conn_desc(&event->disconnect.conn);
         MODLOG_DFLT(INFO, "\n");
+        show_waiting_screen();
 
         /* Connection terminated; resume advertising. */
 #if CONFIG_EXAMPLE_EXTENDED_ADV
@@ -601,7 +603,7 @@ static const uint8_t ssd1680_init_seq[] = {
     U8X8_C(0x11), U8X8_A(0x03),         
     U8X8_C(0x44), U8X8_A(0x00), U8X8_A(0x0F), 
     U8X8_C(0x45), U8X8_A(0x00), U8X8_A(0x00), U8X8_A(0xF9), U8X8_A(0x00), 
-    U8X8_C(0x3C), U8X8_A(0x05),         
+    U8X8_C(0x3C), U8X8_A(0x05), // 기본값 0x05로 복구        
     U8X8_C(0x18), U8X8_A(0x80),         
     U8X8_END_TRANSFER(), U8X8_END()
 };
@@ -619,7 +621,7 @@ static const u8x8_display_info_t ssd1680_info = {
     .reset_pulse_width_ms = 100, .post_reset_wait_ms = 100,
     .sck_clock_hz = 4000000UL, .spi_mode = 0,
     .tile_width = 32, .tile_height = 16,
-    .pixel_width = 250, .pixel_height = 122
+    .pixel_width = 250, .pixel_height = 128
 };
 
 uint8_t u8x8_d_ssd1680_custom(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr) {
@@ -724,11 +726,25 @@ void init_epaper() {
     uint8_t tile_buf_height;
     u8g2_SetupBuffer(&u8g2, u8g2_m_32_16_f(&tile_buf_height), tile_buf_height, u8g2_ll_hvline_vertical_top_lsb, U8G2_R0);
     u8g2_InitDisplay(&u8g2);
-    u8g2_SetPowerSave(&u8g2, 0);
+    u8g2_ClearBuffer(&u8g2); // 버퍼 초기화
+    u8g2_SendBuffer(&u8g2);  // 초기 RAM 데이터를 깨끗하게 흰색으로 전송
+    u8g2_SetPowerSave(&u8g2, 0);}
+
+//mapmo waiting screen
+void show_waiting_screen() {
+    u8g2_ClearBuffer(&u8g2);
+    
+    // 순수하게 비트맵 이미지만 출력
+    u8g2_DrawBitmap(&u8g2, 0, 4, 32, 124, epd_bitmap_allArray[0]);    
+    u8g2_SendBuffer(&u8g2);
+    
+    // 상태 초기화
+    memset(current_display_text, 0, sizeof(current_display_text));
 }
 
 //mapmo display rendering
 void draw_todo_list(const char *text) {
+    // 중복 렌더링 방지
     if (is_display_initialized && strcmp(current_display_text, text) == 0) return;
 
     ESP_LOGI(tag, "디스플레이 업데이트 중...");
@@ -736,24 +752,52 @@ void draw_todo_list(const char *text) {
     strncpy(current_display_text, text, sizeof(current_display_text)-1);
 
     u8g2_ClearBuffer(&u8g2);
-    u8g2_SetFont(&u8g2, u8g2_font_ncenB14_tr); 
-    u8g2_DrawStr(&u8g2, 10, 25, "MAPMO LIST");
-    u8g2_DrawHLine(&u8g2, 0, 32, 250); 
-    u8g2_SetFont(&u8g2, u8g2_font_korean); 
     
+    // 원본 텍스트 복사 (strtok 함수가 원본을 조작하기 때문)
     char tmp[256];
     strncpy(tmp, text, sizeof(tmp)-1);
     tmp[sizeof(tmp)-1] = '\0';
-    char *line = strtok(tmp, "\n");
-    int y_pos = 55;
-    
-    while(line != NULL && y_pos < 120) {
-        char item[64];
-        snprintf(item, sizeof(item), "- %s", line);
-        u8g2_DrawUTF8(&u8g2, 10, y_pos, item);
-        y_pos += 25; 
-        line = strtok(NULL, "\n");
+
+    // 폰트는 모두 한글 폰트로 통일 (장소와 할 일 모두 한글이 들어오므로)
+    u8g2_SetFont(&u8g2, u8g2_font_korean); 
+
+    // ------------------------------------------------
+    // 1. 장소 파싱 및 상단 헤더 출력
+    // ------------------------------------------------
+    char *location = strtok(tmp, "\n");
+    if (location != NULL) {
+        char header_str[64];
+        // 괄호를 씌워 장소임을 강조 (예: [ 집 ])
+        snprintf(header_str, sizeof(header_str), "[ %s ]", location); 
+        u8g2_DrawUTF8(&u8g2, 5, 30, header_str); 
     }
+    
+    u8g2_DrawHLine(&u8g2, 0, 38, 250); // 구분선
+
+    // ------------------------------------------------
+    // 2. 할 일(Task) 목록 파싱 및 출력
+    // ------------------------------------------------
+    char *task = strtok(NULL, "\n");
+    int y_pos = 65; // 첫 번째 할 일의 Y좌표
+    int task_count = 0;
+
+    // 할 일이 남아있고, 4개를 넘지 않을 때까지 반복
+    while(task != NULL && task_count < 4) {
+        char item_str[100];
+        
+        // 앞에 귀여운 체크박스 느낌의 기호 추가
+        snprintf(item_str, sizeof(item_str), "- %s", task); 
+        
+        u8g2_DrawUTF8(&u8g2, 10, y_pos, item_str);
+        
+        y_pos += 22; // 다음 줄 간격 (22픽셀씩 내림: 50 -> 72 -> 94 -> 116)
+        task_count++;
+        
+        // 다음 할 일 가져오기
+        task = strtok(NULL, "\n");
+    }
+
+    // 버퍼에 그려진 내용을 실제 e-paper 화면으로 전송!
     u8g2_SendBuffer(&u8g2);
 }
 
@@ -769,7 +813,8 @@ app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
-
+    init_epaper();
+    show_waiting_screen();
     ret = nimble_port_init();
     if (ret != ESP_OK) {
         ESP_LOGE(tag, "Failed to init nimble %d ", ret);
@@ -811,7 +856,7 @@ app_main(void)
 
 #if CONFIG_BT_NIMBLE_GAP_SERVICE
     /* Set the default device name. */
-    rc = ble_svc_gap_device_name_set("nimble-bleprph");
+    rc = ble_svc_gap_device_name_set("Mapmo_vini");
     assert(rc == 0);
 #endif
 
@@ -839,7 +884,7 @@ app_main(void)
             ESP_LOGI(tag, "수신된 문자열: %s", g_mapmo_rx_buf);
             
             // TODO: 여기서 Mapmo 관련 동작 수행
-            
+            draw_todo_list(g_mapmo_rx_buf);
             g_mapmo_rx_flag = false; 
         }
         vTaskDelay(pdMS_TO_TICKS(100)); 

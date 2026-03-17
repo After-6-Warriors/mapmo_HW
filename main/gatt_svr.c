@@ -29,7 +29,7 @@
 
 /*** Maximum number of characteristics with the notify flag ***/
 #define MAX_NOTIFY 5
-
+extern void show_waiting_screen(void);
 extern char g_mapmo_rx_buf[256];
 extern bool g_mapmo_rx_flag;
 
@@ -159,7 +159,14 @@ gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
         int copy_len = data_len < 255 ? data_len : 255;
         os_mbuf_copydata(ctxt->om, 0, copy_len, g_mapmo_rx_buf);
         g_mapmo_rx_buf[copy_len] = '\0';
-        g_mapmo_rx_flag = true; 
+        if (strcmp(g_mapmo_rx_buf, "!MAPMO_RESET") == 0) {
+            ESP_LOGW("GATT_SVR", "리셋 명령 수신: 대기화면으로 전환");
+            show_waiting_screen(); // 대기화면(픽셀 아트) 출력 함수 호출
+            g_mapmo_rx_flag = false; 
+        } else {
+            // 일반 할 일 목록 데이터인 경우에만 깃발을 올립니다.
+            g_mapmo_rx_flag = true; 
+        }
 
         if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
             MODLOG_DFLT(INFO, "Characteristic write; conn_handle=%d attr_handle=%d",
